@@ -10,6 +10,7 @@
 #include "msParam.hpp"
 #include "reGlobalsExtern.hpp"
 #include "rcConnect.hpp"
+#include "miscServerFunct.hpp"
 
 // =-=-=-=-=-=-=-
 #include "irods_resource_plugin.hpp"
@@ -67,6 +68,11 @@
 #include <sys/stat.h>
 
 #include <string.h>
+#include <pthread.h>
+
+
+static pthread_mutex_t DirectAccessMutex;
+static int DirectAccessMutexInitDone = 0;
 
 
 // =-=-=-=-=-=-=-
@@ -224,6 +230,121 @@ directAccessGetOperationUid(rsComm_t *rsComm)
        osauthGetUid() will return -1 on error.
     */
     return osauthGetUid(rsComm->clientUser.userName);
+}
+
+
+
+/* These global variables and 4 functions are used to track
+   per file state across operations (if needed). Right now
+   this is only needed to store the file mode for new
+   files that are read-only, as they can't be opened for
+   write after the create call */
+
+static int DirectAccessFileStateArraySize = 0;
+static directAccessFileState_t *DirectAccessFileStateArray = NULL;
+
+
+
+int
+directAccessAcquireLock()
+{
+  int rc;
+
+  if (!DirectAccessMutexInitDone) {
+    rc = pthread_mutex_init(&DirectAccessMutex, NULL);
+    if (rc) {
+      rodsLog(LOG_ERROR, "directAccessAcquireLock: error in pthread_mutex_init: %s",
+              strerror(errno));
+      return rc;
+    }
+    DirectAccessMutexInitDone = 1;
+  }
+
+  rc = pthread_mutex_lock(&DirectAccessMutex);
+  if (rc) {
+    rodsLog(LOG_ERROR, "directAccessAcquireLock: error in pthread_mutex_lock: %s",
+            strerror(errno));
+  }
+
+  return rc;
+}
+
+int
+directAccessReleaseLock()
+{
+  int rc = 0;
+
+  if (DirectAccessMutexInitDone) {
+    rc = pthread_mutex_unlock(&DirectAccessMutex);
+    if (rc) {
+      rodsLog(LOG_ERROR, "directAccessReleaseLock: error in pthread_mutex_unlock: %s",
+              strerror(errno));
+    }
+  }
+
+  return rc;
+}
+
+
+static int
+directAccessFileArrayResize()
+{
+    directAccessFileState_t *newArray;
+    int newArraySize = DirectAccessFileStateArraySize + DIRECT_ACCESS_FILE_STATE_ARRAY_SIZE;
+    int i;
+
+    newArray = (directAccessFileState_t*)calloc(newArraySize, sizeof(directAccessFileState_t));
+    if (newArray == NULL) {
+        rodsLog(LOG_ERROR, "directAccessFileArrayResize: could not calloc new array: errno=%d",
+                errno);
+        return -1;
+    }
+    memset(newArray, 0, newArraySize*sizeof(directAccessFileState_t));
+
+    for (i = 0; i < DirectAccessFileStateArraySize; i++) {
+        newArray[i] = DirectAccessFileStateArray[i];
+    }
+    for (; i < newArraySize; i++) {
+        /* indicate unused with -1 */
+        newArray[i].fd = -1;
+    }
+
+    if (DirectAccessFileStateArray) {
+        free(DirectAccessFileStateArray);
+    }
+    DirectAccessFileStateArray = newArray;
+    DirectAccessFileStateArraySize = newArraySize;
+
+    return 0;
+}
+
+
+static directAccessFileState_t *
+directAccessFileNewState()
+{
+    int count;
+    int index;
+
+    /* only try to resize count times should never be an issue */
+    count = 5;
+    index = 0;
+
+    while (count) {
+        if (index == DirectAccessFileStateArraySize) {
+            if (directAccessFileArrayResize()) {
+                /* whoops ... malloc error */
+                return NULL;
+            }
+            count--;
+        }
+        if (DirectAccessFileStateArray[index].fd == -1) {
+            DirectAccessFileStateArray[index].fd = -2;
+            return &DirectAccessFileStateArray[index];
+        }
+        index++;
+    }
+
+    return NULL;
 }
 
 
@@ -446,7 +567,11 @@ extern "C" {
         irods::resource_plugin_context& _ctx ) {
         irods::error result = SUCCESS();
         
-        rsComm_t *rsComm = _ctx.comm_;
+        rsComm_t *rsComm;
+        const char *fileName;
+        int mode;
+        keyValPair_t *condInput;
+
         static char fname[] = "directAccessFileCreate";
         int fd;
         mode_t myMask;
@@ -460,74 +585,149 @@ extern "C" {
         char *fileModeStr = NULL;
         int myerrno;
 
-        opUid = directAccessGetOperationUid(rsComm);
-        if (opUid < 0) {
-            rodsLog(LOG_NOTICE,
-                    "%s: remote zone users cannot modify direct access vaults. User %s#%s",
-                    fname, rsComm->clientUser.userName, rsComm->clientUser.rodsZone);
-            return DIRECT_ACCESS_FILE_USER_INVALID_ERR;
-        }
 
 
         // =-=-=-=-=-=-=-
         // Check the operation parameters and update the physical path
         irods::error ret = directaccess_check_params_and_path( _ctx );
         result = ASSERT_PASS( ret, "Invalid parameters or physical path." );
-        if ( result.ok() ) {
+        if (!result.ok()) return result;
 
-            // =-=-=-=-=-=-=-
-            // get ref to fco
-            irods::file_object_ptr fco = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+		// =-=-=-=-=-=-=-
+		// Get server connection handle
+		rsComm = _ctx.comm();
 
-            ret = directaccess_file_get_fsfreespace_plugin( _ctx );
-            if ( ( result = ASSERT_PASS( ret, "Error determining freespace on system." ) ).ok() ) {
-                rodsLong_t file_size = fco->size();
-                if ( ( result = ASSERT_ERROR( file_size < 0 || ret.code() >= file_size, USER_FILE_TOO_LARGE, "File size: %ld is greater than space left on device: %ld",
-                                              file_size, ret.code() ) ).ok() ) {
+		// =-=-=-=-=-=-=-
+		// No love for remote users
+		opUid = directAccessGetOperationUid(rsComm);
+		result = ASSERT_ERROR(opUid>=0, opUid, "%s: remote zone users cannot modify direct access vaults. User %s#%s",
+				fname, rsComm->clientUser.userName, rsComm->clientUser.rodsZone);
+		if (!result.ok()) return result;
 
-                    // =-=-=-=-=-=-=-
-                    // make call to umask & open for create
-                    mode_t myMask = umask( ( mode_t ) 0000 );
-                    int    fd     = open( fco->physical_path().c_str(), O_RDWR | O_CREAT | O_EXCL, fco->mode() );
 
-                    // =-=-=-=-=-=-=-
-                    // reset the old mask
-                    ( void ) umask( ( mode_t ) myMask );
+        // =-=-=-=-=-=-=-
+        // get ref to fco
+        irods::file_object_ptr fco = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+        fileName = fco->physical_path().c_str();
+        mode = fco->mode();
+        condInput = fco->cond_input();
 
-                    // =-=-=-=-=-=-=-
-                    // if we got a 0 descriptor, try again
-                    if ( fd == 0 ) {
+        // =-=-=-=-=-=-=-
+        // Try to determine available space
+        ret = directaccess_file_get_fsfreespace_plugin( _ctx );
+        result = ASSERT_PASS( ret, "Error determining freespace on system." );
+        if (!result.ok()) return result;
 
-                        close( fd );
-                        rodsLog( LOG_NOTICE, "directaccess_file_create_plugin: 0 descriptor" );
-                        open( "/dev/null", O_RDWR, 0 );
-                        fd = open( fco->physical_path().c_str(), O_RDWR | O_CREAT | O_EXCL, fco->mode() );
-                    }
+        // =-=-=-=-=-=-=-
+        // Enough space?
+        rodsLong_t file_size = fco->size();
+        result = ASSERT_ERROR( file_size < 0 || ret.code() >= file_size, USER_FILE_TOO_LARGE, "File size: %ld is greater than space left on device: %ld",
+        		file_size, ret.code() );
+        if (!result.ok()) return result;
 
-                    // =-=-=-=-=-=-=-
-                    // cache file descriptor in out-variable
-                    fco->file_descriptor( fd );
 
-                    // =-=-=-=-=-=-=-
-                    // trap error case with bad fd
-                    if ( fd < 0 ) {
-                        int status = UNIX_FILE_CREATE_ERR - errno;
-                        if ( !( result = ASSERT_ERROR( fd >= 0, UNIX_FILE_CREATE_ERR - errno, "create error for \"%s\", errno = \"%s\", status = %d",
-                                                       fco->physical_path().c_str(), strerror( errno ), status ) ).ok() ) {
 
-                            // =-=-=-=-=-=-=-
-                            // WARNING :: Major Assumptions are made upstream and use the FD also as a
-                            //         :: Status, if this is not done EVERYTHING BREAKS!!!!111one
-                            fco->file_descriptor( status );
-                            result.code( status );
-                        }
-                        else {
-                            result.code( fd );
-                        }
+        /* initially create the file as root to avoid any
+           directory permission issues. We'll chown it later
+           if necessary. */
+        directAccessAcquireLock();
+        changeToRootUser();
+
+        myMask = umask((mode_t) 0000);
+        fd = open (fileName, O_RDWR|O_CREAT|O_EXCL, mode);
+        /* reset the old mask */
+        (void) umask((mode_t) myMask);
+
+        if (fd == 0) {
+            close (fd);
+    	rodsLog (LOG_NOTICE, "%s: 0 descriptor", fname);
+            open ("/dev/null", O_RDWR, 0);
+            myMask = umask((mode_t) 0000);
+            fd = open (fileName, O_RDWR|O_CREAT|O_EXCL, mode);
+            (void) umask((mode_t) myMask);
+        }
+
+        if (fd < 0) {
+            myerrno = errno;
+            changeToServiceUser();
+            directAccessReleaseLock();
+            fd = UNIX_FILE_CREATE_ERR - myerrno;
+    	if (errno == EEXIST) {
+    	    rodsLog (LOG_DEBUG, "%s: open error for %s, file exists",
+                         fname, fileName);
+            }
+            else if (errno == ENOENT) {
+    	    rodsLog (LOG_DEBUG, "%s: open error for %s, path component doesn't exist",
+                         fname, fileName, fd);
+    	}
+            else {
+    	    rodsLog (LOG_NOTICE, "%s: open error for %s, status = %d",
+                         fname, fileName, fd);
+    	}
+    	return (fd);
+        }
+
+        /* if meta-data was passed, use chown/chmod to set the
+           meta-data on the file. */
+        if (condInput) {
+            fileUidStr = getValByKey(condInput, FILE_UID_KW);
+            fileGidStr = getValByKey(condInput, FILE_GID_KW);
+            fileModeStr = getValByKey(condInput, FILE_MODE_KW);
+            if (fileUidStr && fileGidStr && fileModeStr) {
+                fileUid = atoi(fileUidStr);
+                fileGid = atoi(fileGidStr);
+                fileMode = atoi(fileModeStr);
+                if (fchown(fd, fileUid, fileGid)) {
+                    rodsLog(LOG_ERROR, "%s: could not set owner/group on %s. errno=%d",
+                            fname, fileName, errno);
+                }
+                if (fchmod(fd, fileMode)) {
+                    rodsLog(LOG_ERROR, "%s: could not set mode on %s. errno=%d",
+                            fname, fileName, errno);
+                }
+            }
+        }
+
+        close(fd);
+
+        /* now re-open the file as the user making the call */
+        changeToUser(opUid);
+        fd = open(fileName, O_RDWR);
+
+        if (fd < 0) {
+            if (errno == EACCES && fileModeStr) {
+                /* possible that the file mode applied from the
+                   passed meta-data has a read-only mode for the
+                   operation user. If we're creating the file
+                   with meta-data, it's probably from iput or
+                   irepl, so open as root so the file can be
+                   properly created. */
+                changeToRootUser();
+                fd = open(fileName, O_RDWR);
+                if (fd > 0) {
+                    /* set file state to tell close() to do close
+                       as the root user */
+                    fileState = directAccessFileNewState();
+                    if (fileState) {
+                        fileState->fd = fd;
+                        fileState->fileMode = fileMode;
                     }
                 }
             }
         }
+
+        if (fd < 0) {
+            fd = UNIX_FILE_CREATE_ERR - errno;
+            rodsLog (LOG_NOTICE, "%s: open error for %s, status = %d",
+                     fname, fileName, fd);
+        }
+
+        changeToServiceUser();
+        directAccessReleaseLock();
+
+
+
+
         // =-=-=-=-=-=-=-
         // declare victory!
         return result;
@@ -774,7 +974,7 @@ extern "C" {
 #ifdef RUN_SERVER_AS_ROOT
             if ( status < 0 && errno == EACCES && isServiceUserSet() ) {
                 if ( changeToRootUser() == 0 ) {
-                    status = stat( filename, statbuf );
+                    status = stat( fco->physical_path().c_str(), _statbuf );
                     changeToServiceUser();
                 }
             }
