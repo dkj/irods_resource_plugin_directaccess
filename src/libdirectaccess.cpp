@@ -1,5 +1,9 @@
 /* -*- mode: c++; fill-column: 132; c-basic-offset: 4; indent-tabs-mode: nil -*- */
 
+/*
+ * libdirectaccess.cpp - This is for the most part a port of iRODS's Direct Access file driver written by Chris Smith
+ */
+
 
 // =-=-=-=-=-=-=-
 // plugin includes
@@ -348,6 +352,130 @@ directAccessFileNewState()
 }
 
 
+void
+directAccessFreeFileState(directAccessFileState_t *fileState)
+{
+    if (fileState) {
+        memset(fileState, 0, sizeof(directAccessFileState_t));
+        fileState->fd = -1;
+    }
+}
+
+static directAccessFileState_t *
+directAccessFileGetState(int fd)
+{
+    int i;
+
+    for (i = 0; i < DirectAccessFileStateArraySize; i++) {
+        if (DirectAccessFileStateArray[i].fd == fd) {
+            return &DirectAccessFileStateArray[i];
+        }
+    }
+
+    return NULL;
+}
+
+
+// =-=-=-=-=-=-=-
+// interface for POSIX Open
+static irods::error unix_file_open(
+    irods::resource_plugin_context& _ctx ) {
+    irods::error result = SUCCESS();
+
+    // =-=-=-=-=-=-=-
+    // Check the operation parameters and update the physical path
+    irods::error ret = directaccess_check_params_and_path( _ctx );
+    if ( ( result = ASSERT_PASS( ret, "Invalid parameters or physical path." ) ).ok() ) {
+
+        // =-=-=-=-=-=-=-
+        // get ref to fco
+        irods::file_object_ptr fco = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+
+        // =-=-=-=-=-=-=-
+        // handle OSX weirdness...
+        int flags = fco->flags();
+
+#if defined(osx_platform)
+        // For osx, O_TRUNC = 0x0400, O_TRUNC = 0x200 for other system
+        if ( flags & 0x200 ) {
+            flags = flags ^ 0x200;
+            flags = flags | O_TRUNC;
+        }
+#endif
+        // =-=-=-=-=-=-=-
+        // make call to open
+        errno = 0;
+        int fd = open( fco->physical_path().c_str(), flags, fco->mode() );
+
+        // =-=-=-=-=-=-=-
+        // if we got a 0 descriptor, try again
+        if ( fd == 0 ) {
+            close( fd );
+            rodsLog( LOG_NOTICE, "unix_file_open_plugin: 0 descriptor" );
+            open( "/dev/null", O_RDWR, 0 );
+            fd = open( fco->physical_path().c_str(), flags, fco->mode() );
+        }
+
+        // =-=-=-=-=-=-=-
+        // cache status in the file object
+        fco->file_descriptor( fd );
+
+        // =-=-=-=-=-=-=-
+        // did we still get an error?
+        int status = UNIX_FILE_OPEN_ERR - errno;
+        if ( !( result = ASSERT_ERROR( fd >= 0, status, "Open error for \"%s\", errno = \"%s\", status = %d, flags = %d.",
+                                       fco->physical_path().c_str(), strerror( errno ), status, flags ) ).ok() ) {
+            result.code( status );
+        }
+        else {
+            result.code( fd );
+        }
+    }
+
+    // =-=-=-=-=-=-=-
+    // declare victory!
+    return result;
+
+} // unix_file_open
+
+
+// =-=-=-=-=-=-=-
+// interface for POSIX Close
+static irods::error unix_file_close(
+    irods::resource_plugin_context& _ctx ) {
+    irods::error result = SUCCESS();
+
+    // =-=-=-=-=-=-=-
+    // Check the operation parameters and update the physical path
+    irods::error ret = directaccess_check_params_and_path( _ctx );
+    if ( ( result = ASSERT_PASS( ret, "Invalid parameters or physical path." ) ).ok() ) {
+
+        // =-=-=-=-=-=-=-
+        // get ref to fco
+        irods::file_object_ptr fco = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+
+        // =-=-=-=-=-=-=-
+        // make the call to close
+        int status = close( fco->file_descriptor() );
+
+        // =-=-=-=-=-=-=-
+        // log any error
+        int err_status = UNIX_FILE_CLOSE_ERR - errno;
+        if ( !( result = ASSERT_ERROR( status >= 0, err_status, "Close error for file: \"%s\", errno = \"%s\", status = %d.",
+                                       fco->physical_path().c_str(), strerror( errno ), err_status ) ).ok() ) {
+            result.code( err_status );
+        }
+        else {
+            result.code( status );
+        }
+    }
+
+    return result;
+
+} // unix_file_close
+
+
+
 extern "C" {
 
     // =-=-=-=-=-=-=-
@@ -489,76 +617,6 @@ extern "C" {
 
     } // directaccess_file_get_fsfreespace_plugin
 
-    // =-=-=-=-=-=-=-
-    // interface for POSIX create
-    irods::error directaccess_file_create_plugin_old(
-        irods::resource_plugin_context& _ctx ) {
-        irods::error result = SUCCESS();
-
-        // =-=-=-=-=-=-=-
-        // Check the operation parameters and update the physical path
-        irods::error ret = directaccess_check_params_and_path( _ctx );
-        result = ASSERT_PASS( ret, "Invalid parameters or physical path." );
-        if ( result.ok() ) {
-
-            // =-=-=-=-=-=-=-
-            // get ref to fco
-            irods::file_object_ptr fco = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
-
-            ret = directaccess_file_get_fsfreespace_plugin( _ctx );
-            if ( ( result = ASSERT_PASS( ret, "Error determining freespace on system." ) ).ok() ) {
-                rodsLong_t file_size = fco->size();
-                if ( ( result = ASSERT_ERROR( file_size < 0 || ret.code() >= file_size, USER_FILE_TOO_LARGE, "File size: %ld is greater than space left on device: %ld",
-                                              file_size, ret.code() ) ).ok() ) {
-
-                    // =-=-=-=-=-=-=-
-                    // make call to umask & open for create
-                    mode_t myMask = umask( ( mode_t ) 0000 );
-                    int    fd     = open( fco->physical_path().c_str(), O_RDWR | O_CREAT | O_EXCL, fco->mode() );
-
-                    // =-=-=-=-=-=-=-
-                    // reset the old mask
-                    ( void ) umask( ( mode_t ) myMask );
-
-                    // =-=-=-=-=-=-=-
-                    // if we got a 0 descriptor, try again
-                    if ( fd == 0 ) {
-
-                        close( fd );
-                        rodsLog( LOG_NOTICE, "directaccess_file_create_plugin: 0 descriptor" );
-                        open( "/dev/null", O_RDWR, 0 );
-                        fd = open( fco->physical_path().c_str(), O_RDWR | O_CREAT | O_EXCL, fco->mode() );
-                    }
-
-                    // =-=-=-=-=-=-=-
-                    // cache file descriptor in out-variable
-                    fco->file_descriptor( fd );
-
-                    // =-=-=-=-=-=-=-
-                    // trap error case with bad fd
-                    if ( fd < 0 ) {
-                        int status = UNIX_FILE_CREATE_ERR - errno;
-                        if ( !( result = ASSERT_ERROR( fd >= 0, UNIX_FILE_CREATE_ERR - errno, "create error for \"%s\", errno = \"%s\", status = %d",
-                                                       fco->physical_path().c_str(), strerror( errno ), status ) ).ok() ) {
-
-                            // =-=-=-=-=-=-=-
-                            // WARNING :: Major Assumptions are made upstream and use the FD also as a
-                            //         :: Status, if this is not done EVERYTHING BREAKS!!!!111one
-                            fco->file_descriptor( status );
-                            result.code( status );
-                        }
-                        else {
-                            result.code( fd );
-                        }
-                    }
-                }
-            }
-        }
-        // =-=-=-=-=-=-=-
-        // declare victory!
-        return result;
-
-    } // directaccess_file_create_plugin_old
 
     
     // =-=-=-=-=-=-=-
@@ -570,7 +628,7 @@ extern "C" {
         rsComm_t *rsComm;
         const char *fileName;
         int mode;
-        keyValPair_t *condInput;
+        const keyValPair_t *condInput;
 
         static char fname[] = "directAccessFileCreate";
         int fd;
@@ -610,7 +668,7 @@ extern "C" {
         irods::file_object_ptr fco = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
         fileName = fco->physical_path().c_str();
         mode = fco->mode();
-        condInput = fco->cond_input();
+        condInput = &fco->cond_input();
 
         // =-=-=-=-=-=-=-
         // Try to determine available space
@@ -664,7 +722,8 @@ extern "C" {
     	    rodsLog (LOG_NOTICE, "%s: open error for %s, status = %d",
                          fname, fileName, fd);
     	}
-    	return (fd);
+    	result.code(fd);
+    	return result;
         }
 
         /* if meta-data was passed, use chown/chmod to set the
@@ -726,8 +785,6 @@ extern "C" {
         directAccessReleaseLock();
 
 
-
-
         // =-=-=-=-=-=-=-
         // declare victory!
         return result;
@@ -741,55 +798,72 @@ extern "C" {
         irods::resource_plugin_context& _ctx ) {
         irods::error result = SUCCESS();
 
+        rsComm_t *rsComm;
+        const char *fileName;
+        const keyValPair_t *condInput;
+
+        static char fname[] = "directAccessFileOpen";
+        int opUid;
+        char *tmpStr;
+
         // =-=-=-=-=-=-=-
         // Check the operation parameters and update the physical path
         irods::error ret = directaccess_check_params_and_path( _ctx );
-        if ( ( result = ASSERT_PASS( ret, "Invalid parameters or physical path." ) ).ok() ) {
+        result = ASSERT_PASS( ret, "Invalid parameters or physical path." );
+        if (!result.ok()) return result;
 
-            // =-=-=-=-=-=-=-
-            // get ref to fco
-            irods::file_object_ptr fco = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+		// =-=-=-=-=-=-=-
+		// Get server connection handle
+		rsComm = _ctx.comm();
 
-            // =-=-=-=-=-=-=-
-            // handle OSX weirdness...
-            int flags = fco->flags();
+		// =-=-=-=-=-=-=-
+		// get ref to fco
+		irods::file_object_ptr fco = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+        fileName = fco->physical_path().c_str();
+        condInput = &fco->cond_input();
+		int flags = fco->flags();
 
-#if defined(osx_platform)
-            // For osx, O_TRUNC = 0x0400, O_TRUNC = 0x200 for other system
-            if ( flags & 0x200 ) {
-                flags = flags ^ 0x200;
-                flags = flags | O_TRUNC;
-            }
-#endif
-            // =-=-=-=-=-=-=-
-            // make call to open
-            errno = 0;
-            int fd = open( fco->physical_path().c_str(), flags, fco->mode() );
+	    opUid = directAccessGetOperationUid(rsComm);
+	    result = ASSERT_ERROR(opUid >= 0, opUid, "%s: remote zone users cannot modify direct access vaults. User %s#%s",
+                fname, rsComm->clientUser.userName, rsComm->clientUser.rodsZone);
+	    if (!result.ok()) return result;
 
-            // =-=-=-=-=-=-=-
-            // if we got a 0 descriptor, try again
-            if ( fd == 0 ) {
-                close( fd );
-                rodsLog( LOG_NOTICE, "directaccess_file_open_plugin: 0 descriptor" );
-                open( "/dev/null", O_RDWR, 0 );
-                fd = open( fco->physical_path().c_str(), flags, fco->mode() );
-            }
+	    /* if we can retrieve the file's uid meta-data from the
+	       condInput, then we'll assume all meta-data was set */
+	    if (condInput) {
+	        tmpStr = getValByKey(condInput, FILE_UID_KW);
+	    }
+	    else {
+	        tmpStr = NULL;
+	    }
 
-            // =-=-=-=-=-=-=-
-            // cache status in the file object
-            fco->file_descriptor( fd );
+	    if ((flags & (O_RDWR|O_WRONLY)) && tmpStr) {
+	        /* If the files is being opened with a write flag,
+	           and meta-data has been passed, try to create the file
+	           and set the correct meta-data. If the file exists then
+	           directAccessFileCreate() will have no effect. */
+	    	result = directaccess_file_create_plugin(_ctx);
+	        if (result.code() != (UNIX_FILE_CREATE_ERR - EEXIST)) {
+	            rodsLog (LOG_NOTICE, "directAccessFileOpen: open error for %s, errno = %d",
+	                     fileName, errno);
+	            return result;
+	        }
+	        close(result.code());
+	    }
 
-            // =-=-=-=-=-=-=-
-            // did we still get an error?
-            int status = UNIX_FILE_OPEN_ERR - errno;
-            if ( !( result = ASSERT_ERROR( fd >= 0, status, "Open error for \"%s\", errno = \"%s\", status = %d, flags = %d.",
-                                           fco->physical_path().c_str(), strerror( errno ), status, flags ) ).ok() ) {
-                result.code( status );
-            }
-            else {
-                result.code( fd );
-            }
-        }
+	    /* perform the open as the user making the call */
+	    directAccessAcquireLock();
+	    if (opUid) {
+	        changeToUser(opUid);
+	    }
+	    else {
+	        changeToRootUser();
+	    }
+
+	    result = unix_file_open(_ctx);
+
+	    changeToServiceUser();
+	    directAccessReleaseLock();
 
         // =-=-=-=-=-=-=-
         // declare victory!
@@ -881,32 +955,49 @@ extern "C" {
         irods::resource_plugin_context& _ctx ) {
         irods::error result = SUCCESS();
 
+        rsComm_t *rsComm;
+        static char fname[] = "directAccessFileClose";
+        int opUid;
+        directAccessFileState_t *fileState;
+
         // =-=-=-=-=-=-=-
         // Check the operation parameters and update the physical path
         irods::error ret = directaccess_check_params_and_path( _ctx );
-        if ( ( result = ASSERT_PASS( ret, "Invalid parameters or physical path." ) ).ok() ) {
+        result = ASSERT_PASS( ret, "Invalid parameters or physical path." );
+        if (!result.ok()) return result;
 
-            // =-=-=-=-=-=-=-
-            // get ref to fco
-            irods::file_object_ptr fco = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+		// =-=-=-=-=-=-=-
+		// get ref to fco
+		irods::file_object_ptr fco = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
 
-            // =-=-=-=-=-=-=-
-            // make the call to close
-            int status = close( fco->file_descriptor() );
+		// =-=-=-=-=-=-=-
+		// Get server connection handle
+		rsComm = _ctx.comm();
 
-            // =-=-=-=-=-=-=-
-            // log any error
-            int err_status = UNIX_FILE_CLOSE_ERR - errno;
-            if ( !( result = ASSERT_ERROR( status >= 0, err_status, "Close error for file: \"%s\", errno = \"%s\", status = %d.",
-                                           fco->physical_path().c_str(), strerror( errno ), err_status ) ).ok() ) {
-                result.code( err_status );
-            }
-            else {
-                result.code( status );
-            }
-        }
 
-        return result;
+	    opUid = directAccessGetOperationUid(rsComm);
+	    result = ASSERT_ERROR(opUid >= 0, opUid, "%s: remote zone users cannot modify direct access vaults. User %s#%s",
+                fname, rsComm->clientUser.userName, rsComm->clientUser.rodsZone);
+	    if (!result.ok()) return result;
+
+
+	    fileState = directAccessFileGetState(fco->file_descriptor());
+
+	    directAccessAcquireLock();
+	    if (fileState != NULL || opUid == 0) {
+	        directAccessFreeFileState(fileState);
+	        changeToRootUser();
+	    }
+	    else {
+	        changeToUser(opUid);
+	    }
+
+	    result = unix_file_close(_ctx);
+
+	    changeToServiceUser();
+	    directAccessReleaseLock();
+
+	    return result;
 
     } // directaccess_file_close_plugin
 
@@ -1732,22 +1823,22 @@ extern "C" {
         // 4b. map function names to operations.  this map will be used to load
         //     the symbols from the shared object in the delay_load stage of
         //     plugin loading.
-        resc->add_operation( irods::RESOURCE_OP_CREATE,       "directaccess_file_create_plugin" );
-        resc->add_operation( irods::RESOURCE_OP_OPEN,         "directaccess_file_open_plugin" );
-        resc->add_operation( irods::RESOURCE_OP_READ,         "directaccess_file_read_plugin" );
-        resc->add_operation( irods::RESOURCE_OP_WRITE,        "directaccess_file_write_plugin" );
-        resc->add_operation( irods::RESOURCE_OP_CLOSE,        "directaccess_file_close_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_CREATE,       "directaccess_file_create_plugin" );	// done
+        resc->add_operation( irods::RESOURCE_OP_OPEN,         "directaccess_file_open_plugin" );	// done
+        resc->add_operation( irods::RESOURCE_OP_READ,         "directaccess_file_read_plugin" );	// done
+        resc->add_operation( irods::RESOURCE_OP_WRITE,        "directaccess_file_write_plugin" );	// done
+        resc->add_operation( irods::RESOURCE_OP_CLOSE,        "directaccess_file_close_plugin" );	// done
         resc->add_operation( irods::RESOURCE_OP_UNLINK,       "directaccess_file_unlink_plugin" );
         resc->add_operation( irods::RESOURCE_OP_STAT,         "directaccess_file_stat_plugin" );
-        resc->add_operation( irods::RESOURCE_OP_LSEEK,        "directaccess_file_lseek_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_LSEEK,        "directaccess_file_lseek_plugin" );	// done
         resc->add_operation( irods::RESOURCE_OP_MKDIR,        "directaccess_file_mkdir_plugin" );
         resc->add_operation( irods::RESOURCE_OP_RMDIR,        "directaccess_file_rmdir_plugin" );
         resc->add_operation( irods::RESOURCE_OP_OPENDIR,      "directaccess_file_opendir_plugin" );
-        resc->add_operation( irods::RESOURCE_OP_CLOSEDIR,     "directaccess_file_closedir_plugin" );
-        resc->add_operation( irods::RESOURCE_OP_READDIR,      "directaccess_file_readdir_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_CLOSEDIR,     "directaccess_file_closedir_plugin" );	// done
+        resc->add_operation( irods::RESOURCE_OP_READDIR,      "directaccess_file_readdir_plugin" );		// done
         resc->add_operation( irods::RESOURCE_OP_RENAME,       "directaccess_file_rename_plugin" );
         resc->add_operation( irods::RESOURCE_OP_TRUNCATE,     "directaccess_file_truncate_plugin" );
-        resc->add_operation( irods::RESOURCE_OP_FREESPACE,    "directaccess_file_get_fsfreespace_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_FREESPACE,    "directaccess_file_get_fsfreespace_plugin" );	// done
         resc->add_operation( irods::RESOURCE_OP_STAGETOCACHE, "directaccess_file_stagetocache_plugin" );
         resc->add_operation( irods::RESOURCE_OP_SYNCTOARCH,   "directaccess_file_synctoarch_plugin" );
         resc->add_operation( irods::RESOURCE_OP_REGISTERED,   "directaccess_file_registered_plugin" );
