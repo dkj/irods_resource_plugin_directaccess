@@ -475,6 +475,90 @@ static irods::error unix_file_close(
 } // unix_file_close
 
 
+// =-=-=-=-=-=-=-
+// interface for POSIX Unlink
+static irods::error unix_file_unlink(
+    irods::resource_plugin_context& _ctx ) {
+    irods::error result = SUCCESS();
+
+    // =-=-=-=-=-=-=-
+    // Check the operation parameters and update the physical path
+    irods::error ret = directaccess_check_params_and_path( _ctx );
+    if ( ( result = ASSERT_PASS( ret, "Invalid parameters or physical path." ) ).ok() ) {
+
+        // =-=-=-=-=-=-=-
+        // get ref to fco
+        irods::data_object_ptr fco = boost::dynamic_pointer_cast< irods::data_object >( _ctx.fco() );
+
+        // =-=-=-=-=-=-=-
+        // make the call to unlink
+        int status = unlink( fco->physical_path().c_str() );
+
+        // =-=-=-=-=-=-=-
+        // error handling
+        int err_status = UNIX_FILE_UNLINK_ERR - errno;
+        if ( !( result = ASSERT_ERROR( status >= 0, err_status, "Unlink error for \"%s\", errno = \"%s\", status = %d.",
+                                       fco->physical_path().c_str(), strerror( errno ), err_status ) ).ok() ) {
+
+            result.code( err_status );
+        }
+        else {
+            result.code( status );
+        }
+    }
+
+    return result;
+
+} // unix_file_unlink
+
+
+// =-=-=-=-=-=-=-
+// interface for POSIX Stat
+static irods::error unix_file_stat(
+    irods::resource_plugin_context& _ctx,
+    struct stat*                        _statbuf ) {
+    irods::error result = SUCCESS();
+
+    // =-=-=-=-=-=-=-
+    // NOTE:: this function assumes the object's physical path is
+    //        correct and should not have the vault path
+    //        prepended - hcj
+
+    irods::error ret = _ctx.valid();
+    if ( ( result = ASSERT_PASS( ret, "resource context is invalid." ) ).ok() ) {
+
+        // =-=-=-=-=-=-=-
+        // get ref to fco
+        irods::data_object_ptr fco = boost::dynamic_pointer_cast< irods::data_object >( _ctx.fco() );
+
+        // =-=-=-=-=-=-=-
+        // make the call to stat
+        int status = stat( fco->physical_path().c_str(), _statbuf );
+
+        // =-=-=-=-=-=-=-
+        // if the file can't be accessed due to permission denied
+        // try again using root credentials.
+		if ( status < 0 && errno == EACCES && isServiceUserSet() ) {
+			if ( changeToRootUser() == 0 ) {
+				status = stat( fco->physical_path().c_str() , _statbuf );
+				changeToServiceUser();
+			}
+		}
+
+        // =-=-=-=-=-=-=-
+        // return an error if necessary
+        int err_status = UNIX_FILE_STAT_ERR - errno;
+        if ( ( result = ASSERT_ERROR( status >= 0, err_status, "Stat error for \"%s\", errno = \"%s\", status = %d.",
+                                      fco->physical_path().c_str(), strerror( errno ), err_status ) ).ok() ) {
+            result.code( status );
+        }
+    }
+
+    return result;
+
+} // unix_file_stat
+
+
 
 extern "C" {
 
@@ -630,7 +714,7 @@ extern "C" {
         int mode;
         const keyValPair_t *condInput;
 
-        static char fname[] = "directAccessFileCreate";
+        static char fname[] = "directaccess_file_create_plugin";
         int fd;
         mode_t myMask;
         uid_t fileUid;
@@ -802,7 +886,7 @@ extern "C" {
         const char *fileName;
         const keyValPair_t *condInput;
 
-        static char fname[] = "directAccessFileOpen";
+        static char fname[] = "directaccess_file_open_plugin";
         int opUid;
         char *tmpStr;
 
@@ -956,7 +1040,7 @@ extern "C" {
         irods::error result = SUCCESS();
 
         rsComm_t *rsComm;
-        static char fname[] = "directAccessFileClose";
+        static char fname[] = "directaccess_file_close_plugin";
         int opUid;
         directAccessFileState_t *fileState;
 
@@ -1007,31 +1091,45 @@ extern "C" {
         irods::resource_plugin_context& _ctx ) {
         irods::error result = SUCCESS();
 
+        static char fname[] = "directaccess_file_unlink_plugin";
+        int opUid;
+        rsComm_t *rsComm;
+
         // =-=-=-=-=-=-=-
         // Check the operation parameters and update the physical path
         irods::error ret = directaccess_check_params_and_path( _ctx );
-        if ( ( result = ASSERT_PASS( ret, "Invalid parameters or physical path." ) ).ok() ) {
+        result = ASSERT_PASS( ret, "Invalid parameters or physical path." );
+        if (!result.ok()) return result;
 
-            // =-=-=-=-=-=-=-
-            // get ref to fco
-            irods::data_object_ptr fco = boost::dynamic_pointer_cast< irods::data_object >( _ctx.fco() );
 
-            // =-=-=-=-=-=-=-
-            // make the call to unlink
-            int status = unlink( fco->physical_path().c_str() );
 
-            // =-=-=-=-=-=-=-
-            // error handling
-            int err_status = UNIX_FILE_UNLINK_ERR - errno;
-            if ( !( result = ASSERT_ERROR( status >= 0, err_status, "Unlink error for \"%s\", errno = \"%s\", status = %d.",
-                                           fco->physical_path().c_str(), strerror( errno ), err_status ) ).ok() ) {
+		// =-=-=-=-=-=-=-
+		// get ref to fco
+		irods::data_object_ptr fco = boost::dynamic_pointer_cast< irods::data_object >( _ctx.fco() );
 
-                result.code( err_status );
-            }
-            else {
-                result.code( status );
-            }
-        }
+
+		// =-=-=-=-=-=-=-
+		// Get server connection handle
+		rsComm = _ctx.comm();
+
+
+	    opUid = directAccessGetOperationUid(rsComm);
+	    result = ASSERT_ERROR(opUid >= 0, opUid, "%s: remote zone users cannot modify direct access vaults. User %s#%s",
+	    		fname, rsComm->clientUser.userName, rsComm->clientUser.rodsZone);
+	    if (!result.ok()) return result;
+
+	    directAccessAcquireLock();
+	    if (opUid) {
+	        changeToUser(opUid);
+	    }
+	    else {
+	        changeToRootUser();
+	    }
+
+	    result = unix_file_unlink(_ctx);
+
+	    changeToServiceUser();
+	    directAccessReleaseLock();
 
         return result;
 
@@ -1043,42 +1141,53 @@ extern "C" {
         irods::resource_plugin_context& _ctx,
         struct stat*                        _statbuf ) {
         irods::error result = SUCCESS();
+
+        static char fname[] = "directaccess_file_stat_plugin";
+        int opUid;
+        rsComm_t *rsComm;
+
         // =-=-=-=-=-=-=-
         // NOTE:: this function assumes the object's physical path is
         //        correct and should not have the vault path
         //        prepended - hcj
 
         irods::error ret = _ctx.valid<irods::data_object>();
-        if ( ( result = ASSERT_PASS( ret, "resource context is invalid." ) ).ok() ) {
+        result = ASSERT_PASS( ret, "resource context is invalid." );
+        if (!result.ok()) return result;
 
-            // =-=-=-=-=-=-=-
-            // get ref to fco
-            irods::data_object_ptr fco = boost::dynamic_pointer_cast< irods::data_object >( _ctx.fco() );
 
-            // =-=-=-=-=-=-=-
-            // make the call to stat
-            int status = stat( fco->physical_path().c_str(), _statbuf );
 
-            // =-=-=-=-=-=-=-
-            // if the file can't be accessed due to permission denied
-            // try again using root credentials.
-#ifdef RUN_SERVER_AS_ROOT
-            if ( status < 0 && errno == EACCES && isServiceUserSet() ) {
-                if ( changeToRootUser() == 0 ) {
-                    status = stat( fco->physical_path().c_str(), _statbuf );
-                    changeToServiceUser();
-                }
-            }
-#endif
 
-            // =-=-=-=-=-=-=-
-            // return an error if necessary
-            int err_status = UNIX_FILE_STAT_ERR - errno;
-            if ( ( result = ASSERT_ERROR( status >= 0, err_status, "Stat error for \"%s\", errno = \"%s\", status = %d.",
-                                          fco->physical_path().c_str(), strerror( errno ), err_status ) ).ok() ) {
-                result.code( status );
-            }
-        }
+		// =-=-=-=-=-=-=-
+		// get ref to fco
+		irods::data_object_ptr fco = boost::dynamic_pointer_cast< irods::data_object >( _ctx.fco() );
+
+		// =-=-=-=-=-=-=-
+		// Get server connection handle
+		rsComm = _ctx.comm();
+
+
+	    opUid = directAccessGetOperationUid(rsComm);
+	    if (opUid < 0) {
+	        rodsLog(LOG_NOTICE,
+	                "%s: remote zone users cannot modify direct access vaults. User %s#%s",
+	                fname, rsComm->clientUser.userName, rsComm->clientUser.rodsZone);
+	        return DIRECT_ACCESS_FILE_USER_INVALID_ERR;
+	    }
+
+	    directAccessAcquireLock();
+	    if (opUid) {
+	        changeToUser(opUid);
+	    }
+	    else {
+	        changeToRootUser();
+	    }
+
+	    result = unix_file_stat( _ctx, _statbuf);
+
+	    changeToServiceUser();
+	    directAccessReleaseLock();
+
 
         return result;
 
@@ -1828,8 +1937,8 @@ extern "C" {
         resc->add_operation( irods::RESOURCE_OP_READ,         "directaccess_file_read_plugin" );	// done
         resc->add_operation( irods::RESOURCE_OP_WRITE,        "directaccess_file_write_plugin" );	// done
         resc->add_operation( irods::RESOURCE_OP_CLOSE,        "directaccess_file_close_plugin" );	// done
-        resc->add_operation( irods::RESOURCE_OP_UNLINK,       "directaccess_file_unlink_plugin" );
-        resc->add_operation( irods::RESOURCE_OP_STAT,         "directaccess_file_stat_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_UNLINK,       "directaccess_file_unlink_plugin" );	// done
+        resc->add_operation( irods::RESOURCE_OP_STAT,         "directaccess_file_stat_plugin" );	// done
         resc->add_operation( irods::RESOURCE_OP_LSEEK,        "directaccess_file_lseek_plugin" );	// done
         resc->add_operation( irods::RESOURCE_OP_MKDIR,        "directaccess_file_mkdir_plugin" );
         resc->add_operation( irods::RESOURCE_OP_RMDIR,        "directaccess_file_rmdir_plugin" );
