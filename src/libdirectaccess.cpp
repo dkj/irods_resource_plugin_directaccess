@@ -353,7 +353,7 @@ directAccessFileNewState()
 
 
 void
-directAccessFreeFileState(directAccessFileState_t *fileState)
+static directAccessFreeFileState(directAccessFileState_t *fileState)
 {
     if (fileState) {
         memset(fileState, 0, sizeof(directAccessFileState_t));
@@ -374,308 +374,6 @@ directAccessFileGetState(int fd)
 
     return NULL;
 }
-
-
-// =-=-=-=-=-=-=-
-// interface for POSIX Open
-static irods::error unix_file_open(
-    irods::resource_plugin_context& _ctx ) {
-    irods::error result = SUCCESS();
-
-    // =-=-=-=-=-=-=-
-    // Check the operation parameters and update the physical path
-    irods::error ret = directaccess_check_params_and_path( _ctx );
-    if ( ( result = ASSERT_PASS( ret, "Invalid parameters or physical path." ) ).ok() ) {
-
-        // =-=-=-=-=-=-=-
-        // get ref to fco
-        irods::file_object_ptr fco = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
-
-        // =-=-=-=-=-=-=-
-        // handle OSX weirdness...
-        int flags = fco->flags();
-
-#if defined(osx_platform)
-        // For osx, O_TRUNC = 0x0400, O_TRUNC = 0x200 for other system
-        if ( flags & 0x200 ) {
-            flags = flags ^ 0x200;
-            flags = flags | O_TRUNC;
-        }
-#endif
-        // =-=-=-=-=-=-=-
-        // make call to open
-        errno = 0;
-        int fd = open( fco->physical_path().c_str(), flags, fco->mode() );
-
-        // =-=-=-=-=-=-=-
-        // if we got a 0 descriptor, try again
-        if ( fd == 0 ) {
-            close( fd );
-            rodsLog( LOG_NOTICE, "unix_file_open_plugin: 0 descriptor" );
-            open( "/dev/null", O_RDWR, 0 );
-            fd = open( fco->physical_path().c_str(), flags, fco->mode() );
-        }
-
-        // =-=-=-=-=-=-=-
-        // cache status in the file object
-        fco->file_descriptor( fd );
-
-        // =-=-=-=-=-=-=-
-        // did we still get an error?
-        int status = UNIX_FILE_OPEN_ERR - errno;
-        if ( !( result = ASSERT_ERROR( fd >= 0, status, "Open error for \"%s\", errno = \"%s\", status = %d, flags = %d.",
-                                       fco->physical_path().c_str(), strerror( errno ), status, flags ) ).ok() ) {
-            result.code( status );
-        }
-        else {
-            result.code( fd );
-        }
-    }
-
-    // =-=-=-=-=-=-=-
-    // declare victory!
-    return result;
-
-} // unix_file_open
-
-
-// =-=-=-=-=-=-=-
-// interface for POSIX Close
-static irods::error unix_file_close(
-    irods::resource_plugin_context& _ctx ) {
-    irods::error result = SUCCESS();
-
-    // =-=-=-=-=-=-=-
-    // Check the operation parameters and update the physical path
-    irods::error ret = directaccess_check_params_and_path( _ctx );
-    if ( ( result = ASSERT_PASS( ret, "Invalid parameters or physical path." ) ).ok() ) {
-
-        // =-=-=-=-=-=-=-
-        // get ref to fco
-        irods::file_object_ptr fco = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
-
-        // =-=-=-=-=-=-=-
-        // make the call to close
-        int status = close( fco->file_descriptor() );
-
-        // =-=-=-=-=-=-=-
-        // log any error
-        int err_status = UNIX_FILE_CLOSE_ERR - errno;
-        if ( !( result = ASSERT_ERROR( status >= 0, err_status, "Close error for file: \"%s\", errno = \"%s\", status = %d.",
-                                       fco->physical_path().c_str(), strerror( errno ), err_status ) ).ok() ) {
-            result.code( err_status );
-        }
-        else {
-            result.code( status );
-        }
-    }
-
-    return result;
-
-} // unix_file_close
-
-
-// =-=-=-=-=-=-=-
-// interface for POSIX Unlink
-static irods::error unix_file_unlink(
-    irods::resource_plugin_context& _ctx ) {
-    irods::error result = SUCCESS();
-
-    // =-=-=-=-=-=-=-
-    // Check the operation parameters and update the physical path
-    irods::error ret = directaccess_check_params_and_path( _ctx );
-    if ( ( result = ASSERT_PASS( ret, "Invalid parameters or physical path." ) ).ok() ) {
-
-        // =-=-=-=-=-=-=-
-        // get ref to fco
-        irods::data_object_ptr fco = boost::dynamic_pointer_cast< irods::data_object >( _ctx.fco() );
-
-        // =-=-=-=-=-=-=-
-        // make the call to unlink
-        int status = unlink( fco->physical_path().c_str() );
-
-        // =-=-=-=-=-=-=-
-        // error handling
-        int err_status = UNIX_FILE_UNLINK_ERR - errno;
-        if ( !( result = ASSERT_ERROR( status >= 0, err_status, "Unlink error for \"%s\", errno = \"%s\", status = %d.",
-                                       fco->physical_path().c_str(), strerror( errno ), err_status ) ).ok() ) {
-
-            result.code( err_status );
-        }
-        else {
-            result.code( status );
-        }
-    }
-
-    return result;
-
-} // unix_file_unlink
-
-
-// =-=-=-=-=-=-=-
-// interface for POSIX Stat
-static irods::error unix_file_stat(
-    irods::resource_plugin_context& _ctx,
-    struct stat*                        _statbuf ) {
-    irods::error result = SUCCESS();
-
-    // =-=-=-=-=-=-=-
-    // NOTE:: this function assumes the object's physical path is
-    //        correct and should not have the vault path
-    //        prepended - hcj
-
-    irods::error ret = _ctx.valid();
-    if ( ( result = ASSERT_PASS( ret, "resource context is invalid." ) ).ok() ) {
-
-        // =-=-=-=-=-=-=-
-        // get ref to fco
-        irods::data_object_ptr fco = boost::dynamic_pointer_cast< irods::data_object >( _ctx.fco() );
-
-        // =-=-=-=-=-=-=-
-        // make the call to stat
-        int status = stat( fco->physical_path().c_str(), _statbuf );
-
-        // =-=-=-=-=-=-=-
-        // if the file can't be accessed due to permission denied
-        // try again using root credentials.
-		if ( status < 0 && errno == EACCES && isServiceUserSet() ) {
-			if ( changeToRootUser() == 0 ) {
-				status = stat( fco->physical_path().c_str() , _statbuf );
-				changeToServiceUser();
-			}
-		}
-
-        // =-=-=-=-=-=-=-
-        // return an error if necessary
-        int err_status = UNIX_FILE_STAT_ERR - errno;
-        if ( ( result = ASSERT_ERROR( status >= 0, err_status, "Stat error for \"%s\", errno = \"%s\", status = %d.",
-                                      fco->physical_path().c_str(), strerror( errno ), err_status ) ).ok() ) {
-            result.code( status );
-        }
-    }
-
-    return result;
-
-} // unix_file_stat
-
-
-// =-=-=-=-=-=-=-
-// interface for POSIX mkdir
-static irods::error unix_file_mkdir(
-    irods::resource_plugin_context& _ctx ) {
-    irods::error result = SUCCESS();
-
-    // =-=-=-=-=-=-=-
-    // NOTE :: this function assumes the object's physical path is correct and
-    //         should not have the vault path prepended - hcj
-
-    irods::error ret = _ctx.valid< irods::collection_object >();
-    if ( ( result = ASSERT_PASS( ret, "resource context is invalid." ) ).ok() ) {
-
-        // =-=-=-=-=-=-=-
-        // cast down the chain to our understood object type
-        irods::collection_object_ptr fco = boost::dynamic_pointer_cast< irods::collection_object >( _ctx.fco() );
-
-        // =-=-=-=-=-=-=-
-        // make the call to mkdir & umask
-        mode_t myMask = umask( ( mode_t ) 0000 );
-        int    status = mkdir( fco->physical_path().c_str(), fco->mode() );
-
-        // =-=-=-=-=-=-=-
-        // reset the old mask
-        umask( ( mode_t ) myMask );
-
-        // =-=-=-=-=-=-=-
-        // return an error if necessary
-        result.code( status );
-        int err_status = UNIX_FILE_MKDIR_ERR - errno;
-        if ( ( result = ASSERT_ERROR( status >= 0, err_status, "Mkdir error for \"%s\", errno = \"%s\", status = %d.",
-                                      fco->physical_path().c_str(), strerror( errno ), err_status ) ).ok() ) {
-            result.code( status );
-        }
-    }
-    return result;
-
-} // unix_file_mkdir
-
-
-// =-=-=-=-=-=-=-
-// interface for POSIX rmdir
-static irods::error unix_file_rmdir(
-    irods::resource_plugin_context& _ctx ) {
-    irods::error result = SUCCESS();
-
-    // =-=-=-=-=-=-=-
-    // Check the operation parameters and update the physical path
-    irods::error ret = directaccess_check_params_and_path( _ctx );
-    if ( ( result = ASSERT_PASS( ret, "Invalid parameters or physical path." ) ).ok() ) {
-
-        // =-=-=-=-=-=-=-
-        // cast down the chain to our understood object type
-        irods::collection_object_ptr fco = boost::dynamic_pointer_cast< irods::collection_object >( _ctx.fco() );
-
-        // =-=-=-=-=-=-=-
-        // make the call to rmdir
-        int status = rmdir( fco->physical_path().c_str() );
-
-        // =-=-=-=-=-=-=-
-        // return an error if necessary
-        int err_status = UNIX_FILE_RMDIR_ERR - errno;
-        result = ASSERT_ERROR( status >= 0, err_status, "Rmdir error for \"%s\", errno = \"%s\", status = %d.",
-                               fco->physical_path().c_str(), strerror( errno ), err_status );
-    }
-
-    return result;
-
-} // unix_file_rmdir
-
-
-// =-=-=-=-=-=-=-
-// interface for POSIX opendir
-static irods::error unix_file_opendir(
-    irods::resource_plugin_context& _ctx ) {
-    irods::error result = SUCCESS();
-
-    // =-=-=-=-=-=-=-
-    // Check the operation parameters and update the physical path
-    irods::error ret = directaccess_check_params_and_path< irods::collection_object >( _ctx );
-    if ( ( result = ASSERT_PASS( ret, "Invalid parameters or physical path." ) ).ok() ) {
-
-        // =-=-=-=-=-=-=-
-        // cast down the chain to our understood object type
-        irods::collection_object_ptr fco = boost::dynamic_pointer_cast< irods::collection_object >( _ctx.fco() );
-
-        // =-=-=-=-=-=-=-
-        // make the call to opendir
-        DIR* dir_ptr = opendir( fco->physical_path().c_str() );
-
-        // =-=-=-=-=-=-=-
-        // if the directory can't be accessed due to permission
-        // denied try again using root credentials.
-		if ( dir_ptr == NULL && errno == EACCES && isServiceUserSet() ) {
-			if ( changeToRootUser() == 0 ) {
-				dir_ptr = opendir( fco->physical_path().c_str() );
-				changeToServiceUser();
-			} // if
-		}
-
-        // =-=-=-=-=-=-=-
-        // cache status in out variable
-        int err_status = UNIX_FILE_OPENDIR_ERR - errno;
-
-        // =-=-=-=-=-=-=-
-        // return an error if necessary
-        if ( ( result = ASSERT_ERROR( NULL != dir_ptr, err_status, "Opendir error for \"%s\", errno = \"%s\", status = %d.",
-                                      fco->physical_path().c_str(), strerror( errno ), err_status ) ).ok() ) {
-            // =-=-=-=-=-=-=-
-            // cache dir_ptr & status in out variables
-            fco->directory_pointer( dir_ptr );
-        }
-    }
-
-    return result;
-
-} // unix_file_opendir_plugin
 
 
 
@@ -1063,7 +761,44 @@ extern "C" {
 	        changeToRootUser();
 	    }
 
-	    result = unix_file_open(_ctx);
+
+        // =-=-=-=-=-=-=-
+        // handle OSX weirdness...
+#if defined(osx_platform)
+        // For osx, O_TRUNC = 0x0400, O_TRUNC = 0x200 for other system
+        if ( flags & 0x200 ) {
+            flags = flags ^ 0x200;
+            flags = flags | O_TRUNC;
+        }
+#endif
+        // =-=-=-=-=-=-=-
+        // make call to open
+        errno = 0;
+        int fd = open( fco->physical_path().c_str(), flags, fco->mode() );
+
+        // =-=-=-=-=-=-=-
+        // if we got a 0 descriptor, try again
+        if ( fd == 0 ) {
+            close( fd );
+            rodsLog( LOG_NOTICE, "unix_file_open_plugin: 0 descriptor" );
+            open( "/dev/null", O_RDWR, 0 );
+            fd = open( fco->physical_path().c_str(), flags, fco->mode() );
+        }
+
+        // =-=-=-=-=-=-=-
+        // cache status in the file object
+        fco->file_descriptor( fd );
+
+        // =-=-=-=-=-=-=-
+        // did we still get an error?
+        int status = UNIX_FILE_OPEN_ERR - errno;
+        if ( !( result = ASSERT_ERROR( fd >= 0, status, "Open error for \"%s\", errno = \"%s\", status = %d, flags = %d.",
+                                       fco->physical_path().c_str(), strerror( errno ), status, flags ) ).ok() ) {
+            result.code( status );
+        }
+        else {
+            result.code( fd );
+        }
 
 	    changeToServiceUser();
 	    directAccessReleaseLock();
@@ -1195,7 +930,20 @@ extern "C" {
 	        changeToUser(opUid);
 	    }
 
-	    result = unix_file_close(_ctx);
+        // =-=-=-=-=-=-=-
+        // make the call to close
+        int status = close( fco->file_descriptor() );
+
+        // =-=-=-=-=-=-=-
+        // log any error
+        int err_status = UNIX_FILE_CLOSE_ERR - errno;
+        if ( !( result = ASSERT_ERROR( status >= 0, err_status, "Close error for file: \"%s\", errno = \"%s\", status = %d.",
+                                       fco->physical_path().c_str(), strerror( errno ), err_status ) ).ok() ) {
+            result.code( err_status );
+        }
+        else {
+            result.code( status );
+        }
 
 	    changeToServiceUser();
 	    directAccessReleaseLock();
@@ -1243,7 +991,21 @@ extern "C" {
 	        changeToRootUser();
 	    }
 
-	    result = unix_file_unlink(_ctx);
+        // =-=-=-=-=-=-=-
+        // make the call to unlink
+        int status = unlink( fco->physical_path().c_str() );
+
+        // =-=-=-=-=-=-=-
+        // error handling
+        int err_status = UNIX_FILE_UNLINK_ERR - errno;
+        if ( !( result = ASSERT_ERROR( status >= 0, err_status, "Unlink error for \"%s\", errno = \"%s\", status = %d.",
+                                       fco->physical_path().c_str(), strerror( errno ), err_status ) ).ok() ) {
+
+            result.code( err_status );
+        }
+        else {
+            result.code( status );
+        }
 
 	    changeToServiceUser();
 	    directAccessReleaseLock();
@@ -1294,7 +1056,27 @@ extern "C" {
 	        changeToRootUser();
 	    }
 
-	    result = unix_file_stat( _ctx, _statbuf);
+        // =-=-=-=-=-=-=-
+        // make the call to stat
+        int status = stat( fco->physical_path().c_str(), _statbuf );
+
+        // =-=-=-=-=-=-=-
+        // if the file can't be accessed due to permission denied
+        // try again using root credentials.
+		if ( status < 0 && errno == EACCES && isServiceUserSet() ) {
+			if ( changeToRootUser() == 0 ) {
+				status = stat( fco->physical_path().c_str() , _statbuf );
+				changeToServiceUser();
+			}
+		}
+
+        // =-=-=-=-=-=-=-
+        // return an error if necessary
+        int err_status = UNIX_FILE_STAT_ERR - errno;
+        if ( ( result = ASSERT_ERROR( status >= 0, err_status, "Stat error for \"%s\", errno = \"%s\", status = %d.",
+                                      fco->physical_path().c_str(), strerror( errno ), err_status ) ).ok() ) {
+            result.code( status );
+        }
 
 	    changeToServiceUser();
 	    directAccessReleaseLock();
@@ -1347,12 +1129,12 @@ extern "C" {
         static char fname[] = "directaccess_file_mkdir_plugin";
         int opUid;
         rsComm_t *rsComm;
-//        char *fileUidStr;
-//        char *fileGidStr;
-//        char *fileModeStr;
-//        int fileUid;
-//        int fileGid;
-//        int fileMode;
+        char *fileUidStr;
+        char *fileGidStr;
+        char *fileModeStr;
+        int fileUid;
+        int fileGid;
+        int fileMode;
 
         // =-=-=-=-=-=-=-
         // NOTE :: this function assumes the object's physical path is correct and
@@ -1380,28 +1162,44 @@ extern "C" {
 	    directAccessAcquireLock();
 	    changeToRootUser();
 
-	   result = unix_file_mkdir( _ctx );
+        // =-=-=-=-=-=-=-
+        // make the call to mkdir & umask
+        mode_t myMask = umask( ( mode_t ) 0000 );
+        int    status = mkdir( fco->physical_path().c_str(), fco->mode() );
+
+        // =-=-=-=-=-=-=-
+        // reset the old mask
+        umask( ( mode_t ) myMask );
+
+        // =-=-=-=-=-=-=-
+        // return an error if necessary
+        result.code( status );
+        int err_status = UNIX_FILE_MKDIR_ERR - errno;
+        if ( ( result = ASSERT_ERROR( status >= 0, err_status, "Mkdir error for \"%s\", errno = \"%s\", status = %d.",
+                                      fco->physical_path().c_str(), strerror( errno ), err_status ) ).ok() ) {
+            result.code( status );
+        }
 
 	    /* if meta-data was passed, use chown/chmod to set the
 	       meta-data on the new directory. */
-//	    if (result.code() >= 0 && condInput) {
-//	        fileUidStr = getValByKey(condInput, FILE_UID_KW);
-//	        fileGidStr = getValByKey(condInput, FILE_GID_KW);
-//	        fileModeStr = getValByKey(condInput, FILE_MODE_KW);
-//	        if (fileUidStr && fileGidStr && fileModeStr) {
-//	            fileUid = atoi(fileUidStr);
-//	            fileGid = atoi(fileGidStr);
-//	            fileMode = atoi(fileModeStr);
-//	            if (chown(dirname, fileUid, fileGid)) {
-//	                rodsLog(LOG_ERROR, "%s: could not set owner/group on %s. errno=%d",
-//	                        fname, dirname, errno);
-//	            }
-//	            if (chmod(dirname, fileMode)) {
-//	                rodsLog(LOG_ERROR, "%s: could not set mode on %s. errno=%d",
-//	                        fname, dirname, errno);
-//	            }
-//	        }
-//	    }
+	    if (result.code() >= 0 && fco->cond_input().len > 0) {
+	        fileUidStr = getValByKey(&fco->cond_input(), FILE_UID_KW);
+	        fileGidStr = getValByKey(&fco->cond_input(), FILE_GID_KW);
+	        fileModeStr = getValByKey(&fco->cond_input(), FILE_MODE_KW);
+	        if (fileUidStr && fileGidStr && fileModeStr) {
+	            fileUid = atoi(fileUidStr);
+	            fileGid = atoi(fileGidStr);
+	            fileMode = atoi(fileModeStr);
+	            if (chown( fco->physical_path().c_str(), fileUid, fileGid)) {
+	                rodsLog(LOG_ERROR, "%s: could not set owner/group on %s. errno=%d",
+	                        fname, fco->physical_path().c_str(), errno);
+	            }
+	            if (chmod(fco->physical_path().c_str(), fileMode)) {
+	                rodsLog(LOG_ERROR, "%s: could not set mode on %s. errno=%d",
+	                        fname, fco->physical_path().c_str(), errno);
+	            }
+	        }
+	    }
 
 	    changeToServiceUser();
 	    directAccessReleaseLock();
@@ -1447,7 +1245,15 @@ extern "C" {
 	        changeToRootUser();
 	    }
 
-	    result = unix_file_rmdir( _ctx );
+        // =-=-=-=-=-=-=-
+        // make the call to rmdir
+        int status = rmdir( fco->physical_path().c_str() );
+
+        // =-=-=-=-=-=-=-
+        // return an error if necessary
+        int err_status = UNIX_FILE_RMDIR_ERR - errno;
+        result = ASSERT_ERROR( status >= 0, err_status, "Rmdir error for \"%s\", errno = \"%s\", status = %d.",
+                               fco->physical_path().c_str(), strerror( errno ), err_status );
 
 	    changeToServiceUser();
 	    directAccessReleaseLock();
@@ -1493,7 +1299,34 @@ extern "C" {
 	        changeToRootUser();
 	    }
 
-	    result =  unix_file_opendir( _ctx );
+
+        // =-=-=-=-=-=-=-
+        // make the call to opendir
+        DIR* dir_ptr = opendir( fco->physical_path().c_str() );
+
+        // =-=-=-=-=-=-=-
+        // if the directory can't be accessed due to permission
+        // denied try again using root credentials.
+		if ( dir_ptr == NULL && errno == EACCES && isServiceUserSet() ) {
+			if ( changeToRootUser() == 0 ) {
+				dir_ptr = opendir( fco->physical_path().c_str() );
+				changeToServiceUser();
+			} // if
+		}
+
+        // =-=-=-=-=-=-=-
+        // cache status in out variable
+        int err_status = UNIX_FILE_OPENDIR_ERR - errno;
+
+        // =-=-=-=-=-=-=-
+        // return an error if necessary
+        if ( ( result = ASSERT_ERROR( NULL != dir_ptr, err_status, "Opendir error for \"%s\", errno = \"%s\", status = %d.",
+                                      fco->physical_path().c_str(), strerror( errno ), err_status ) ).ok() ) {
+            // =-=-=-=-=-=-=-
+            // cache dir_ptr & status in out variables
+            fco->directory_pointer( dir_ptr );
+        }
+
 
 	    changeToServiceUser();
 	    directAccessReleaseLock();
@@ -1600,45 +1433,71 @@ extern "C" {
         const char*                         _new_file_name ) {
         irods::error result = SUCCESS();
 
+        static char fname[] = "directaccess_file_rename_plugin";
+        int opUid;
+        rsComm_t *rsComm;
+
         // =-=-=-=-=-=-=-
         // Check the operation parameters and update the physical path
         irods::error ret = directaccess_check_params_and_path( _ctx );
-        if ( ( result = ASSERT_PASS( ret, "Invalid parameters or physical path." ) ).ok() ) {
+        result = ASSERT_PASS( ret, "Invalid parameters or physical path." );
+        if (!result.ok()) return result;
 
-            // =-=-=-=-=-=-=-
-            // manufacture a new path from the new file name
-            std::string new_full_path;
-            ret = directaccess_generate_full_path( _ctx.prop_map(), _new_file_name, new_full_path );
-            if ( ( result = ASSERT_PASS( ret, "Unable to generate full path for destination file: \"%s\".",
-                                         _new_file_name ) ).ok() ) {
 
-                // =-=-=-=-=-=-=-
-                // cast down the hierarchy to the desired object
-                irods::file_object_ptr fco = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+		// =-=-=-=-=-=-=-
+		// Get server connection handle
+		rsComm = _ctx.comm();
 
-                // =-=-=-=-=-=-=-
-                // make the directories in the path to the new file
-                std::string new_path = new_full_path;
-                std::size_t last_slash = new_path.find_last_of( '/' );
-                new_path.erase( last_slash );
-                ret = directaccess_file_mkdir_r( _ctx.comm(), "", new_path.c_str(), 0750 );
-                if ( ( result = ASSERT_PASS( ret, "Mkdir error for \"%s\".", new_path.c_str() ) ).ok() ) {
+	    opUid = directAccessGetOperationUid(rsComm);
+	    result = ASSERT_ERROR(opUid>=0, opUid,  "%s: remote zone users cannot modify direct access vaults. User %s#%s",
+	                fname, rsComm->clientUser.userName, rsComm->clientUser.rodsZone);
+	    if (!result.ok()) return result;
 
-                }
+		// =-=-=-=-=-=-=-
+		// manufacture a new path from the new file name
+		std::string new_full_path;
+		ret = directaccess_generate_full_path( _ctx.prop_map(), _new_file_name, new_full_path );
+		if ( ( result = ASSERT_PASS( ret, "Unable to generate full path for destination file: \"%s\".",
+									 _new_file_name ) ).ok() ) {
 
-                // =-=-=-=-=-=-=-
-                // make the call to rename
-                int status = rename( fco->physical_path().c_str(), new_full_path.c_str() );
+			// =-=-=-=-=-=-=-
+			// cast down the hierarchy to the desired object
+			irods::file_object_ptr fco = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
 
-                // =-=-=-=-=-=-=-
-                // handle error cases
-                int err_status = UNIX_FILE_RENAME_ERR - errno;
-                if ( ( result = ASSERT_ERROR( status >= 0, err_status, "Rename error for \"%s\" to \"%s\", errno = \"%s\", status = %d.",
-                                              fco->physical_path().c_str(), new_full_path.c_str(), strerror( errno ), err_status ) ).ok() ) {
-                    result.code( status );
-                }
-            }
-        }
+			// =-=-=-=-=-=-=-
+			// make the directories in the path to the new file
+			std::string new_path = new_full_path;
+			std::size_t last_slash = new_path.find_last_of( '/' );
+			new_path.erase( last_slash );
+			ret = directaccess_file_mkdir_r( _ctx.comm(), "", new_path.c_str(), 0750 );
+			if ( ( result = ASSERT_PASS( ret, "Mkdir error for \"%s\".", new_path.c_str() ) ).ok() ) {
+
+			}
+
+
+		    directAccessAcquireLock();
+		    if (opUid) {
+		        changeToUser(opUid);
+		    }
+		    else {
+		        changeToRootUser();
+		    }
+
+			// =-=-=-=-=-=-=-
+			// make the call to rename
+			int status = rename( fco->physical_path().c_str(), new_full_path.c_str() );
+
+		    changeToServiceUser();
+		    directAccessReleaseLock();
+
+			// =-=-=-=-=-=-=-
+			// handle error cases
+			int err_status = UNIX_FILE_RENAME_ERR - errno;
+			if ( ( result = ASSERT_ERROR( status >= 0, err_status, "Rename error for \"%s\" to \"%s\", errno = \"%s\", status = %d.",
+										  fco->physical_path().c_str(), new_full_path.c_str(), strerror( errno ), err_status ) ).ok() ) {
+				result.code( status );
+			}
+		}
 
         return result;
 
@@ -1650,25 +1509,49 @@ extern "C" {
         irods::resource_plugin_context& _ctx ) {
         irods::error result = SUCCESS();
 
+        static char fname[] = "directaccess_file_truncate";
+        int opUid;
+        rsComm_t *rsComm;
+
         // =-=-=-=-=-=-=-
         // Check the operation parameters and update the physical path
         irods::error ret = directaccess_check_params_and_path< irods::file_object >( _ctx );
-        if ( ( result = ASSERT_PASS( ret, "Invalid parameters or physical path." ) ).ok() ) {
+        result = ASSERT_PASS( ret, "Invalid parameters or physical path." );
+        if (!result.ok()) return result;
 
-            // =-=-=-=-=-=-=-
-            // cast down the chain to our understood object type
-            irods::file_object_ptr file_obj = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+		// =-=-=-=-=-=-=-
+		// Get server connection handle
+		rsComm = _ctx.comm();
 
-            // =-=-=-=-=-=-=-
-            // make the call to rename
-            int status = truncate( file_obj->physical_path().c_str(), file_obj->size() );
+	    opUid = directAccessGetOperationUid(rsComm);
+	    result = ASSERT_ERROR(opUid>=0, opUid,  "%s: remote zone users cannot modify direct access vaults. User %s#%s",
+	                fname, rsComm->clientUser.userName, rsComm->clientUser.rodsZone);
+	    if (!result.ok()) return result;
 
-            // =-=-=-=-=-=-=-
-            // handle any error cases
-            int err_status = UNIX_FILE_TRUNCATE_ERR - errno;
-            result = ASSERT_ERROR( status >= 0, err_status, "Truncate error for: \"%s\", errno = \"%s\", status = %d.",
-                                   file_obj->physical_path().c_str(), strerror( errno ), err_status );
-        }
+		// =-=-=-=-=-=-=-
+		// cast down the chain to our understood object type
+		irods::file_object_ptr file_obj = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+
+		directAccessAcquireLock();
+		if (opUid) {
+			changeToUser(opUid);
+		}
+		else {
+			changeToRootUser();
+		}
+
+		// =-=-=-=-=-=-=-
+		// make the call to rename
+		int status = truncate( file_obj->physical_path().c_str(), file_obj->size() );
+
+		// =-=-=-=-=-=-=-
+		// handle any error cases
+		int err_status = UNIX_FILE_TRUNCATE_ERR - errno;
+		result = ASSERT_ERROR( status >= 0, err_status, "Truncate error for: \"%s\", errno = \"%s\", status = %d.",
+							   file_obj->physical_path().c_str(), strerror( errno ), err_status );
+
+		changeToServiceUser();
+		directAccessReleaseLock();
 
         return result;
 
@@ -2097,13 +1980,13 @@ extern "C" {
         resc->add_operation( irods::RESOURCE_OP_UNLINK,       "directaccess_file_unlink_plugin" );	// done
         resc->add_operation( irods::RESOURCE_OP_STAT,         "directaccess_file_stat_plugin" );	// done
         resc->add_operation( irods::RESOURCE_OP_LSEEK,        "directaccess_file_lseek_plugin" );	// done
-        resc->add_operation( irods::RESOURCE_OP_MKDIR,        "directaccess_file_mkdir_plugin" );	// check condInput arg
+        resc->add_operation( irods::RESOURCE_OP_MKDIR,        "directaccess_file_mkdir_plugin" );	// done
         resc->add_operation( irods::RESOURCE_OP_RMDIR,        "directaccess_file_rmdir_plugin" );	// done
         resc->add_operation( irods::RESOURCE_OP_OPENDIR,      "directaccess_file_opendir_plugin" );	// done
         resc->add_operation( irods::RESOURCE_OP_CLOSEDIR,     "directaccess_file_closedir_plugin" );	// done
         resc->add_operation( irods::RESOURCE_OP_READDIR,      "directaccess_file_readdir_plugin" );		// done
-        resc->add_operation( irods::RESOURCE_OP_RENAME,       "directaccess_file_rename_plugin" );
-        resc->add_operation( irods::RESOURCE_OP_TRUNCATE,     "directaccess_file_truncate_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_RENAME,       "directaccess_file_rename_plugin" );		// done
+        resc->add_operation( irods::RESOURCE_OP_TRUNCATE,     "directaccess_file_truncate_plugin" );	// done
         resc->add_operation( irods::RESOURCE_OP_FREESPACE,    "directaccess_file_get_fsfreespace_plugin" );	// done
         resc->add_operation( irods::RESOURCE_OP_STAGETOCACHE, "directaccess_file_stagetocache_plugin" );
         resc->add_operation( irods::RESOURCE_OP_SYNCTOARCH,   "directaccess_file_synctoarch_plugin" );
