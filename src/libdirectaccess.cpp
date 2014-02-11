@@ -1901,7 +1901,7 @@ extern "C" {
     //    necessary to do custom parsing of the context string to place
     //    any useful values into the property map for reference in later
     //    operations.  semicolon is the preferred delimiter
-    class unixfilesystem_resource : public irods::resource {
+    class directaccess_resource : public irods::resource {
         // =-=-=-=-=-=-=-
         // 3a. create a class to provide maintenance operations, this is only for example
         //     and will not be called.
@@ -1920,7 +1920,7 @@ extern "C" {
             }
 
             irods::error operator()( rcComm_t* ) {
-                rodsLog( LOG_NOTICE, "unixfilesystem_resource::post_disconnect_maintenance_operation - [%s]",
+                rodsLog( LOG_NOTICE, "directaccess_resource::post_disconnect_maintenance_operation - [%s]",
                          name_.c_str() );
                 return SUCCESS();
             }
@@ -1931,7 +1931,7 @@ extern "C" {
         }; // class maintenance_operation
 
     public:
-        unixfilesystem_resource(
+        directaccess_resource(
             const std::string& _inst_name,
             const std::string& _context ) :
             irods::resource(
@@ -1966,7 +1966,7 @@ extern "C" {
 
         // =-=-=-=-=-=-=-
         // 4a. create unixfilesystem_resource
-        unixfilesystem_resource* resc = new unixfilesystem_resource( _inst_name, _context );
+        directaccess_resource* resc = new directaccess_resource( _inst_name, _context );
 
         // =-=-=-=-=-=-=-
         // 4b. map function names to operations.  this map will be used to load
@@ -1988,12 +1988,12 @@ extern "C" {
         resc->add_operation( irods::RESOURCE_OP_RENAME,       "directaccess_file_rename_plugin" );		// done
         resc->add_operation( irods::RESOURCE_OP_TRUNCATE,     "directaccess_file_truncate_plugin" );	// done
         resc->add_operation( irods::RESOURCE_OP_FREESPACE,    "directaccess_file_get_fsfreespace_plugin" );	// done
-        resc->add_operation( irods::RESOURCE_OP_STAGETOCACHE, "directaccess_file_stagetocache_plugin" );
-        resc->add_operation( irods::RESOURCE_OP_SYNCTOARCH,   "directaccess_file_synctoarch_plugin" );
-        resc->add_operation( irods::RESOURCE_OP_REGISTERED,   "directaccess_file_registered_plugin" );
-        resc->add_operation( irods::RESOURCE_OP_UNREGISTERED, "directaccess_file_unregistered_plugin" );
-        resc->add_operation( irods::RESOURCE_OP_MODIFIED,     "directaccess_file_modified_plugin" );
-        resc->add_operation( irods::RESOURCE_OP_NOTIFY,       "directaccess_file_notify_plugin" );
+//        resc->add_operation( irods::RESOURCE_OP_STAGETOCACHE, "directaccess_file_stagetocache_plugin" );
+//        resc->add_operation( irods::RESOURCE_OP_SYNCTOARCH,   "directaccess_file_synctoarch_plugin" );
+//        resc->add_operation( irods::RESOURCE_OP_REGISTERED,   "directaccess_file_registered_plugin" );
+//        resc->add_operation( irods::RESOURCE_OP_UNREGISTERED, "directaccess_file_unregistered_plugin" );
+//        resc->add_operation( irods::RESOURCE_OP_MODIFIED,     "directaccess_file_modified_plugin" );
+//        resc->add_operation( irods::RESOURCE_OP_NOTIFY,       "directaccess_file_notify_plugin" );
 
         resc->add_operation( irods::RESOURCE_OP_RESOLVE_RESC_HIER,     "directaccess_file_redirect_plugin" );
         resc->add_operation( irods::RESOURCE_OP_REBALANCE,             "directaccess_file_rebalance" );

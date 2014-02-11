@@ -1,6 +1,6 @@
 GCC =g++ 
 INC	=-I/usr/include/irods/ -I./include/ 
-CFLAGS =-Wall
+CFLAGS =-g -Wall
 
 all:
 	${GCC} ${INC} $(CFLAGS) -Dlinux_platform -fPIC -shared -o libdirectaccess.so ./src/libdirectaccess.cpp /usr/lib/libirods.a
