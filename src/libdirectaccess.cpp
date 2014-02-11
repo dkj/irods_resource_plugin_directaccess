@@ -1044,7 +1044,7 @@ extern "C" {
 
 
 	    opUid = directAccessGetOperationUid(rsComm);
-	    result = ASSERT_ERROR(opUid, opUid>=0, "%s: remote zone users cannot modify direct access vaults. User %s#%s",
+	    result = ASSERT_ERROR(opUid>=0, opUid, "%s: remote zone users cannot modify direct access vaults. User %s#%s",
 	                fname, rsComm->clientUser.userName, rsComm->clientUser.rodsZone);
 	    if (!result.ok()) return result;
 
