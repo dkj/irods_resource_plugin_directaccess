@@ -1990,10 +1990,10 @@ extern "C" {
         resc->add_operation( irods::RESOURCE_OP_FREESPACE,    "directaccess_file_get_fsfreespace_plugin" );	// done
 //        resc->add_operation( irods::RESOURCE_OP_STAGETOCACHE, "directaccess_file_stagetocache_plugin" );
 //        resc->add_operation( irods::RESOURCE_OP_SYNCTOARCH,   "directaccess_file_synctoarch_plugin" );
-//        resc->add_operation( irods::RESOURCE_OP_REGISTERED,   "directaccess_file_registered_plugin" );
-//        resc->add_operation( irods::RESOURCE_OP_UNREGISTERED, "directaccess_file_unregistered_plugin" );
-//        resc->add_operation( irods::RESOURCE_OP_MODIFIED,     "directaccess_file_modified_plugin" );
-//        resc->add_operation( irods::RESOURCE_OP_NOTIFY,       "directaccess_file_notify_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_REGISTERED,   "directaccess_file_registered_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_UNREGISTERED, "directaccess_file_unregistered_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_MODIFIED,     "directaccess_file_modified_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_NOTIFY,       "directaccess_file_notify_plugin" );
 
         resc->add_operation( irods::RESOURCE_OP_RESOLVE_RESC_HIER,     "directaccess_file_redirect_plugin" );
         resc->add_operation( irods::RESOURCE_OP_REBALANCE,             "directaccess_file_rebalance" );
