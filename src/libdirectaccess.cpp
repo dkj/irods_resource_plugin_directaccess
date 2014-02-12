@@ -606,6 +606,10 @@ extern "C" {
             (void) umask((mode_t) myMask);
         }
 
+        // =-=-=-=-=-=-=-
+        // cache file descriptor in out-variable
+        fco->file_descriptor( fd );
+
         if (fd < 0) {
             myerrno = errno;
             changeToServiceUser();
