@@ -1976,22 +1976,22 @@ extern "C" {
         // 4b. map function names to operations.  this map will be used to load
         //     the symbols from the shared object in the delay_load stage of
         //     plugin loading.
-        resc->add_operation( irods::RESOURCE_OP_CREATE,       "directaccess_file_create_plugin" );	// done
-        resc->add_operation( irods::RESOURCE_OP_OPEN,         "directaccess_file_open_plugin" );	// done
-        resc->add_operation( irods::RESOURCE_OP_READ,         "directaccess_file_read_plugin" );	// done
-        resc->add_operation( irods::RESOURCE_OP_WRITE,        "directaccess_file_write_plugin" );	// done
-        resc->add_operation( irods::RESOURCE_OP_CLOSE,        "directaccess_file_close_plugin" );	// done
-        resc->add_operation( irods::RESOURCE_OP_UNLINK,       "directaccess_file_unlink_plugin" );	// done
-        resc->add_operation( irods::RESOURCE_OP_STAT,         "directaccess_file_stat_plugin" );	// done
-        resc->add_operation( irods::RESOURCE_OP_LSEEK,        "directaccess_file_lseek_plugin" );	// done
-        resc->add_operation( irods::RESOURCE_OP_MKDIR,        "directaccess_file_mkdir_plugin" );	// done
-        resc->add_operation( irods::RESOURCE_OP_RMDIR,        "directaccess_file_rmdir_plugin" );	// done
-        resc->add_operation( irods::RESOURCE_OP_OPENDIR,      "directaccess_file_opendir_plugin" );	// done
-        resc->add_operation( irods::RESOURCE_OP_CLOSEDIR,     "directaccess_file_closedir_plugin" );	// done
-        resc->add_operation( irods::RESOURCE_OP_READDIR,      "directaccess_file_readdir_plugin" );		// done
-        resc->add_operation( irods::RESOURCE_OP_RENAME,       "directaccess_file_rename_plugin" );		// done
-        resc->add_operation( irods::RESOURCE_OP_TRUNCATE,     "directaccess_file_truncate_plugin" );	// done
-        resc->add_operation( irods::RESOURCE_OP_FREESPACE,    "directaccess_file_get_fsfreespace_plugin" );	// done
+        resc->add_operation( irods::RESOURCE_OP_CREATE,       "directaccess_file_create_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_OPEN,         "directaccess_file_open_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_READ,         "directaccess_file_read_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_WRITE,        "directaccess_file_write_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_CLOSE,        "directaccess_file_close_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_UNLINK,       "directaccess_file_unlink_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_STAT,         "directaccess_file_stat_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_LSEEK,        "directaccess_file_lseek_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_MKDIR,        "directaccess_file_mkdir_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_RMDIR,        "directaccess_file_rmdir_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_OPENDIR,      "directaccess_file_opendir_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_CLOSEDIR,     "directaccess_file_closedir_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_READDIR,      "directaccess_file_readdir_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_RENAME,       "directaccess_file_rename_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_TRUNCATE,     "directaccess_file_truncate_plugin" );
+        resc->add_operation( irods::RESOURCE_OP_FREESPACE,    "directaccess_file_get_fsfreespace_plugin" );
 //        resc->add_operation( irods::RESOURCE_OP_STAGETOCACHE, "directaccess_file_stagetocache_plugin" );
 //        resc->add_operation( irods::RESOURCE_OP_SYNCTOARCH,   "directaccess_file_synctoarch_plugin" );
         resc->add_operation( irods::RESOURCE_OP_REGISTERED,   "directaccess_file_registered_plugin" );
