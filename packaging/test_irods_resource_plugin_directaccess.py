@@ -3,7 +3,7 @@ if (sys.version_info >= (2,7)):
     import unittest
 else:
     import unittest2 as unittest
-from pydevtest_common import assertiCmd, assertiCmdFail, getiCmdOutput, create_local_testfile, get_hostname
+from pydevtest_common import assertiCmd, assertiCmdFail, getiCmdOutput, get_hostname
 import pydevtest_sessions as s
 from resource_suite import ResourceSuite, ShortAndSuite
 from test_chunkydevtest import ChunkyDevTest
@@ -42,3 +42,15 @@ class Test_DirectAccess_Resource(unittest.TestCase, ResourceSuite, ChunkyDevTest
     def tearDown(self):
         self.run_resource_teardown()
         s.twousers_down()
+        
+    @unittest.skip("Cannot create file in vault")
+    def test_ireg_as_rodsuser_in_vault(self):
+        pass
+
+    @unittest.skip("Will actually succeed when server is run as root")
+    def test_local_iput_physicalpath_no_permission(self):
+        pass
+
+    @unittest.skip("No server restart when run as root")
+    def test_ssl_iput_small_and_large_files(self):
+        pass
