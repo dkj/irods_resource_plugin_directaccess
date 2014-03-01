@@ -1184,6 +1184,13 @@ extern "C" {
             result.code( status );
         }
 
+        // =-=-=-=-=-=-=-
+        // chown the dir to ServiceUid (will be overridden if FS meta is found)
+        // so that it doesn't end up owned by root
+        if (result.code() >= 0 && ServiceUid) {
+        	chown(fco->physical_path().c_str(), ServiceUid, ServiceUid);
+        }
+
 	    /* if meta-data was passed, use chown/chmod to set the
 	       meta-data on the new directory. */
 	    if (result.code() >= 0 && fco->cond_input().len > 0) {
