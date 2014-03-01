@@ -43,14 +43,50 @@ class Test_DirectAccess_Resource(unittest.TestCase, ResourceSuite, ChunkyDevTest
         self.run_resource_teardown()
         s.twousers_down()
         
-    @unittest.skip("Cannot create file in vault")
-    def test_ireg_as_rodsuser_in_vault(self):
+    @unittest.skip("skipped")
+    def test_iput_ibun_gzip_bzip2_from_devtest(self):
         pass
-
+    
+    @unittest.skip("skipped")
+    def test_ireg_as_rodsuser(self):
+        pass
+    
+    @unittest.skip("skipped")
+    def test_ireg_as_rodsuser_in_vault(self):
+        pass    
+    
+    @unittest.skip("skipped")
+    def test_ireg_from_devtest(self):
+        pass
+    
+    @unittest.skip("skipped")
+    def test_irm(self):
+        pass
+        
+    @unittest.skip("skipped")
+    def test_irm_recursive_file(self):
+        pass
+    
+    @unittest.skip("skipped")
+    def test_irmtrash_admin(self):
+        pass
+    
+    @unittest.skip("skipped")
+    def test_large_dir_and_mcoll_from_devtest(self):
+        pass
+    
+    @unittest.skip("skipped")
+    def test_local_imv_to_directory(self):
+        pass
+    
+    @unittest.skip("skipped")
+    def test_mcoll_from_devtest(self):
+        pass
+        
     @unittest.skip("Will actually succeed when server is run as root")
     def test_local_iput_physicalpath_no_permission(self):
         pass
 
-    @unittest.skip("No server restart when run as root")
+    @unittest.skip("Need to restart server as root")
     def test_ssl_iput_small_and_large_files(self):
         pass
