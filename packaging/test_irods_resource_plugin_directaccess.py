@@ -17,7 +17,7 @@ import time
 
 
 
-class Test_Direct_Access(unittest.TestCase, ResourceBase):
+class Test_DirectAccess_Resource(unittest.TestCase, ResourceBase):
     ### iRODS server must have been started as root
     ### For this test the following user account and test file must exist:
     # username (alice)
@@ -132,7 +132,7 @@ class Test_Direct_Access(unittest.TestCase, ResourceBase):
 
 
 
-class Test_Regular_UFS_Operations(unittest.TestCase, ResourceSuite, ChunkyDevTest):
+class Test_UFS_with_DirectAccess_Resource(unittest.TestCase, ResourceSuite, ChunkyDevTest):
     
     # timestamp
     ts = str(int(time.time()))
